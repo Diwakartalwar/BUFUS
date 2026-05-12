@@ -211,7 +211,6 @@ static int run_benchmark(const bufus_cfg_t *cfg,
 
 static int run_write(const bufus_cfg_t *cfg,
                      const device_info_t *dinfo) {
-    /* Open source */
     HANDLE   src      = INVALID_HANDLE_VALUE;
     uint64_t src_size = 0;
 
@@ -221,7 +220,7 @@ static int run_write(const bufus_cfg_t *cfg,
     printf("  Source : %s\n", cfg->source);
     printf("           %.2f MiB (%llu bytes)\n",
            (double)src_size / (1024.0 * 1024.0), src_size);
-    printf("  Target : PhysicalDrive%d — %s\n",
+    printf("  Target : PhysicalDrive%d - %s\n",
            cfg->drive_index,
            dinfo->model[0] ? dinfo->model : "(unknown)");
     printf("           %.2f GB\n\n",
@@ -269,7 +268,6 @@ static int run_write(const bufus_cfg_t *cfg,
         }
     }
 
-    /* Open and lock device */
     HANDLE dev = INVALID_HANDLE_VALUE;
     rc = device_open(cfg->drive_index, &dev);
     if (rc != BUFUS_OK) {
@@ -287,7 +285,6 @@ static int run_write(const bufus_cfg_t *cfg,
 
     uint32_t sector = dinfo->sector_size ? dinfo->sector_size : 512;
 
-    /* ── Write ── */
     printf("\n  Writing image...\n");
     io_params_t wp = {
         .src         = src,
@@ -308,8 +305,24 @@ static int run_write(const bufus_cfg_t *cfg,
         return 1;
     }
 
-    /* ── Verify ── */
+    device_unlock(dev);
+    device_close(dev);
+
     if (cfg->verify) {
+        rc = device_open(cfg->drive_index, &dev);
+        if (rc != BUFUS_OK) {
+            ui_print_error("Write succeeded, but verify reopen failed.");
+            CloseHandle(src);
+            return 1;
+        }
+        rc = device_lock(dev, cfg->drive_index);
+        if (rc != BUFUS_OK) {
+            ui_print_error("Write succeeded, but verify lock failed.");
+            device_close(dev);
+            CloseHandle(src);
+            return 1;
+        }
+
         printf("\n  Verifying...\n");
         verify_params_t vp = {
             .src         = src,
@@ -328,10 +341,11 @@ static int run_write(const bufus_cfg_t *cfg,
             CloseHandle(src);
             return 1;
         }
+
+        device_unlock(dev);
+        device_close(dev);
     }
 
-    device_unlock(dev);
-    device_close(dev);
     CloseHandle(src);
     ui_print_success();
     return 0;
@@ -407,3 +421,4 @@ int main(int argc, char **argv) {
     log_close();
     return exit_code;
 }
+

@@ -1,6 +1,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <string.h>
+#include <stdlib.h>
 #include "io.h"
 #include "logger.h"
 
@@ -46,25 +47,10 @@ bufus_err_t io_open_source(const char *path, HANDLE *out, uint64_t *out_size) {
 /* ── Write pipeline ───────────────────────────────────────────────── */
 
 bufus_err_t io_write_image(const io_params_t *p) {
-    /*
-     * The destination device was opened with FILE_FLAG_NO_BUFFERING, so:
-     *   • WriteFile buffer address must be VirtualAlloc'd (page-aligned).
-     *   • Transfer size must be a non-zero multiple of sector_size.
-     *
-     * Strategy: read up to `blk` bytes from the source (any size),
-     * zero-pad the tail to the next sector boundary, then write
-     * the padded block to the device.  This is safe because the
-     * ISO image will be smaller than the drive.
-     */
-    uint32_t sect = (p->sector_size > 0) ? p->sector_size : 512;
-    uint32_t blk  = ((p->block_size + sect - 1) / sect) * sect;
-    if (blk == 0) blk = sect;
-
-    BYTE *buf = (BYTE *)VirtualAlloc(NULL, blk,
-                                     MEM_COMMIT | MEM_RESERVE,
-                                     PAGE_READWRITE);
+    uint32_t blk = p->block_size ? p->block_size : BUFUS_DEFAULT_BLOCK;
+    BYTE *buf = (BYTE *)malloc(blk);
     if (!buf) {
-        LOGE("VirtualAlloc(%u) failed", blk);
+        LOGE("malloc(%u) failed", blk);
         return BUFUS_ERR_NOMEM;
     }
 
@@ -73,12 +59,12 @@ bufus_err_t io_write_image(const io_params_t *p) {
     zero.QuadPart = 0;
     if (!SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN)) {
         LOGE("SetFilePointerEx failed for source seek (error %lu)", GetLastError());
-        VirtualFree(buf, 0, MEM_RELEASE);
+        free(buf);
         return BUFUS_ERR_IO_READ;
     }
     if (!SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN)) {
         LOGE("SetFilePointerEx failed for destination seek (error %lu)", GetLastError());
-        VirtualFree(buf, 0, MEM_RELEASE);
+        free(buf);
         return BUFUS_ERR_IO_WRITE;
     }
 
@@ -94,13 +80,6 @@ bufus_err_t io_write_image(const io_params_t *p) {
         uint64_t remaining = p->src_size - written_total;
         DWORD to_read = (DWORD)(remaining < (uint64_t)blk ? remaining : blk);
 
-        /* Sector-aligned write length (≥ to_read) */
-        DWORD aligned = ((to_read + sect - 1) / sect) * sect;
-        if (aligned > blk) aligned = blk;
-
-        /* Zero the tail pad so we never write stale data */
-        memset(buf, 0, aligned);
-
         DWORD bytes_read = 0;
         if (!ReadFile(p->src, buf, to_read, &bytes_read, NULL)
             || bytes_read == 0) {
@@ -111,8 +90,8 @@ bufus_err_t io_write_image(const io_params_t *p) {
         }
 
         DWORD bytes_written = 0;
-        if (!WriteFile(p->dst, buf, aligned, &bytes_written, NULL)
-            || bytes_written != aligned) {
+        if (!WriteFile(p->dst, buf, bytes_read, &bytes_written, NULL)
+            || bytes_written != bytes_read) {
             LOGE("WriteFile error at offset %llu (error %lu)",
                  written_total, GetLastError());
             rc = BUFUS_ERR_IO_WRITE;
@@ -133,8 +112,11 @@ bufus_err_t io_write_image(const io_params_t *p) {
         }
     }
 
-    FlushFileBuffers(p->dst);
-    VirtualFree(buf, 0, MEM_RELEASE);
+    if (!FlushFileBuffers(p->dst)) {
+        LOGE("FlushFileBuffers failed (error %lu)", GetLastError());
+        rc = BUFUS_ERR_IO_WRITE;
+    }
+    free(buf);
 
     if (rc == BUFUS_OK) {
         LOGI("Write complete: %llu bytes written to device", written_total);
