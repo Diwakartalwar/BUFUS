@@ -13,6 +13,7 @@
 #include "io.h"
 #include "verify.h"
 #include "benchmark.h"
+#include "image_probe.h"
 
 /* ── Error string table ───────────────────────────────────────────── */
 
@@ -229,6 +230,30 @@ static int run_write(const bufus_cfg_t *cfg,
     if (src_size > dinfo->size_bytes) {
         CloseHandle(src);
         ui_print_error("Source image is larger than the target drive.");
+        return 1;
+    }
+
+    image_probe_t probe;
+    rc = image_probe(src, src_size, &probe);
+    if (rc != BUFUS_OK) {
+        CloseHandle(src);
+        ui_print_error("Failed to inspect source image structure.");
+        return 1;
+    }
+
+    printf("  Image  : %s\n", image_kind_str(probe.kind));
+    printf("           MBR=%s  GPT=%s  ISO9660=%s  UEFIPathHint=%s\n\n",
+           probe.has_mbr_signature ? "yes" : "no",
+           probe.has_gpt_header ? "yes" : "no",
+           probe.has_iso9660_pvd ? "yes" : "no",
+           probe.has_uefi_boot_path_hint ? "yes" : "no");
+
+    if (!image_probe_dd_safe(&probe) && !cfg->force) {
+        CloseHandle(src);
+        ui_print_error(
+            "This image does not look like a raw USB-disk image.\n"
+            "  Refusing raw write to avoid creating a non-bootable USB.\n"
+            "  Re-run with --force only if you explicitly want raw ISO write.");
         return 1;
     }
 

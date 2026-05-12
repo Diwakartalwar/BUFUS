@@ -107,17 +107,13 @@ bufus_err_t device_open(int index, HANDLE *out_handle) {
     char path[DEVICE_PATH_LEN];
     snprintf(path, sizeof(path), "\\\\.\\PhysicalDrive%d", index);
 
-    /*
-     * FILE_FLAG_NO_BUFFERING — raw sector I/O, bypasses OS cache.
-     * FILE_FLAG_WRITE_THROUGH — writes go directly to hardware.
-     * Both are required for reliable USB imaging.
-     */
+    /* Correctness-first mode: use buffered device I/O while validating behavior. */
     HANDLE h = CreateFileA(path,
                            GENERIC_READ | GENERIC_WRITE,
                            FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL,
                            OPEN_EXISTING,
-                           FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+                           FILE_ATTRIBUTE_NORMAL,
                            NULL);
 
     if (h == INVALID_HANDLE_VALUE) {
