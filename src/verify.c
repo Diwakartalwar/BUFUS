@@ -31,8 +31,18 @@ bufus_err_t verify_image(const verify_params_t *p) {
     /* Rewind both handles */
     LARGE_INTEGER zero;
     zero.QuadPart = 0;
-    SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN);
-    SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN);
+    if (!SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN)) {
+        LOGE("Verify: SetFilePointerEx failed for source seek (error %lu)", GetLastError());
+        VirtualFree(src_buf, 0, MEM_RELEASE);
+        VirtualFree(dst_buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_READ;
+    }
+    if (!SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN)) {
+        LOGE("Verify: SetFilePointerEx failed for destination seek (error %lu)", GetLastError());
+        VirtualFree(src_buf, 0, MEM_RELEASE);
+        VirtualFree(dst_buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_READ;
+    }
 
     LARGE_INTEGER t_start, t_now, freq;
     QueryPerformanceFrequency(&freq);

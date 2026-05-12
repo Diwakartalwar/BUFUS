@@ -14,7 +14,6 @@ bufus_err_t benchmark_run(HANDLE      dev,
     uint32_t blk  = ((block_size + sect - 1) / sect) * sect;
     if (blk == 0) blk = sect;
 
-    /* Allocate one sector-aligned buffer and fill with a known pattern */
     BYTE *buf = (BYTE *)VirtualAlloc(NULL, blk,
                                      MEM_COMMIT | MEM_RESERVE,
                                      PAGE_READWRITE);
@@ -28,20 +27,27 @@ bufus_err_t benchmark_run(HANDLE      dev,
     QueryPerformanceFrequency(&freq);
     zero.QuadPart = 0;
 
-    /* ── Sequential write ──────────────────────────────────────────── */
-    SetFilePointerEx(dev, zero, NULL, FILE_BEGIN);
+    if (!SetFilePointerEx(dev, zero, NULL, FILE_BEGIN)) {
+        LOGE("benchmark_run: seek to start failed before write (error %lu)",
+             GetLastError());
+        VirtualFree(buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_WRITE;
+    }
+
     uint64_t written = 0;
     QueryPerformanceCounter(&t0);
 
     while (written < test_bytes) {
         DWORD w = 0;
-        if (!WriteFile(dev, buf, blk, &w, NULL) || w == 0) {
-            LOGW("benchmark write stopped at %llu bytes (error %lu)",
+        if (!WriteFile(dev, buf, blk, &w, NULL) || w == 0 || w != blk) {
+            LOGE("benchmark write failed at %llu bytes (error %lu)",
                  written, GetLastError());
-            break;
+            VirtualFree(buf, 0, MEM_RELEASE);
+            return BUFUS_ERR_IO_WRITE;
         }
         written += w;
     }
+
     FlushFileBuffers(dev);
     QueryPerformanceCounter(&t1);
 
@@ -50,20 +56,27 @@ bufus_err_t benchmark_run(HANDLE      dev,
                      ? ((double)written / (1024.0 * 1024.0)) / write_sec
                      : 0.0;
 
-    /* ── Sequential read ───────────────────────────────────────────── */
-    SetFilePointerEx(dev, zero, NULL, FILE_BEGIN);
+    if (!SetFilePointerEx(dev, zero, NULL, FILE_BEGIN)) {
+        LOGE("benchmark_run: seek to start failed before read (error %lu)",
+             GetLastError());
+        VirtualFree(buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_READ;
+    }
+
     uint64_t read_total = 0;
     QueryPerformanceCounter(&t0);
 
     while (read_total < written) {
         DWORD r = 0;
-        if (!ReadFile(dev, buf, blk, &r, NULL) || r == 0) {
-            LOGW("benchmark read stopped at %llu bytes (error %lu)",
+        if (!ReadFile(dev, buf, blk, &r, NULL) || r == 0 || r != blk) {
+            LOGE("benchmark read failed at %llu bytes (error %lu)",
                  read_total, GetLastError());
-            break;
+            VirtualFree(buf, 0, MEM_RELEASE);
+            return BUFUS_ERR_IO_READ;
         }
         read_total += r;
     }
+
     QueryPerformanceCounter(&t1);
 
     double read_sec  = (double)(t1.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
@@ -74,7 +87,7 @@ bufus_err_t benchmark_run(HANDLE      dev,
 
     VirtualFree(buf, 0, MEM_RELEASE);
 
-    LOGI("Benchmark — Write: %.1f MiB/s  Read: %.1f MiB/s  (%.0f MiB tested)",
+    LOGI("Benchmark - Write: %.1f MiB/s  Read: %.1f MiB/s  (%.0f MiB tested)",
          out->write_mbs, out->read_mbs,
          (double)written / (1024.0 * 1024.0));
 

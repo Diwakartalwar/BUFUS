@@ -132,6 +132,7 @@ bufus_err_t device_open(int index, HANDLE *out_handle) {
 }
 
 bufus_err_t device_lock(HANDLE h, int index) {
+    (void)h;
     /*
      * Walk every volume letter / GUID path.  For each volume that
      * lives on our physical drive, dismount it so Windows releases
@@ -140,9 +141,8 @@ bufus_err_t device_lock(HANDLE h, int index) {
     char vol[MAX_PATH];
     HANDLE hf = FindFirstVolumeA(vol, MAX_PATH);
     if (hf == INVALID_HANDLE_VALUE) {
-        LOGW("FindFirstVolume failed (%lu) — proceeding without volume lock",
-             GetLastError());
-        return BUFUS_OK;
+        LOGE("FindFirstVolume failed (%lu)", GetLastError());
+        return BUFUS_ERR_LOCK;
     }
 
     do {
@@ -168,12 +168,24 @@ bufus_err_t device_lock(HANDLE h, int index) {
             if ((int)sdn.DeviceNumber == index) {
                 DWORD dummy = 0;
                 /* Lock prevents other processes writing to the volume */
-                DeviceIoControl(hv, FSCTL_LOCK_VOLUME,
-                                NULL, 0, NULL, 0, &dummy, NULL);
+                if (!DeviceIoControl(hv, FSCTL_LOCK_VOLUME,
+                                     NULL, 0, NULL, 0, &dummy, NULL)) {
+                    LOGE("FSCTL_LOCK_VOLUME failed for PhysicalDrive%d (error %lu)",
+                         index, GetLastError());
+                    CloseHandle(hv);
+                    FindVolumeClose(hf);
+                    return BUFUS_ERR_LOCK;
+                }
                 /* Dismount flushes and removes the mounted filesystem */
-                DeviceIoControl(hv, FSCTL_DISMOUNT_VOLUME,
-                                NULL, 0, NULL, 0, &dummy, NULL);
-                LOGI("Dismounted volume on PhysicalDrive%d", index);
+                if (!DeviceIoControl(hv, FSCTL_DISMOUNT_VOLUME,
+                                     NULL, 0, NULL, 0, &dummy, NULL)) {
+                    LOGE("FSCTL_DISMOUNT_VOLUME failed for PhysicalDrive%d (error %lu)",
+                         index, GetLastError());
+                    CloseHandle(hv);
+                    FindVolumeClose(hf);
+                    return BUFUS_ERR_LOCK;
+                }
+                LOGI("Locked and dismounted volume on PhysicalDrive%d", index);
             }
         }
 

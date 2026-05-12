@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "bufus.h"
 #include "logger.h"
@@ -80,6 +81,20 @@ static void usage(void) {
 
 #define DRIVE_LIST_SENTINEL (-2)
 
+static int parse_int_arg(const char *s, int *out) {
+    char *end = NULL;
+    long v;
+
+    if (!s || !*s || !out) return 0;
+    errno = 0;
+    v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return 0;
+    if (v < -2147483647L - 1L || v > 2147483647L) return 0;
+
+    *out = (int)v;
+    return 1;
+}
+
 static bufus_cfg_t parse_args(int argc, char **argv) {
     bufus_cfg_t cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -90,7 +105,13 @@ static bufus_cfg_t parse_args(int argc, char **argv) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
             strncpy(cfg.source, argv[++i], BUFUS_MAX_PATH_LEN - 1);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
-            cfg.drive_index = atoi(argv[++i]);
+            int drive_idx = -1;
+            if (!parse_int_arg(argv[++i], &drive_idx) || drive_idx < 0) {
+                fprintf(stderr, "  Invalid drive index for -d: %s\n\n", argv[i]);
+                usage();
+                exit(1);
+            }
+            cfg.drive_index = drive_idx;
         } else if (strcmp(argv[i], "--list") == 0) {
             cfg.drive_index = DRIVE_LIST_SENTINEL;
         } else if (strcmp(argv[i], "--verify") == 0) {
@@ -102,8 +123,13 @@ static bufus_cfg_t parse_args(int argc, char **argv) {
         } else if (strcmp(argv[i], "--benchmark") == 0) {
             cfg.benchmark = true;
         } else if (strcmp(argv[i], "--block") == 0 && i + 1 < argc) {
-            uint32_t mib = (uint32_t)atoi(argv[++i]);
-            cfg.block_size = (mib > 0) ? mib * 1024u * 1024u : BUFUS_DEFAULT_BLOCK;
+            int mib = 0;
+            if (!parse_int_arg(argv[++i], &mib) || mib <= 0 || mib > 1024) {
+                fprintf(stderr, "  Invalid block size for --block: %s (expected 1..1024 MiB)\n\n", argv[i]);
+                usage();
+                exit(1);
+            }
+            cfg.block_size = (uint32_t)mib * 1024u * 1024u;
         } else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
             strncpy(cfg.log_file, argv[++i], BUFUS_MAX_PATH_LEN - 1);
         } else if (strcmp(argv[i], "-h") == 0 ||
@@ -136,7 +162,12 @@ static int run_benchmark(const bufus_cfg_t *cfg,
     HANDLE h;
     bufus_err_t rc = device_open(cfg->drive_index, &h);
     if (rc != BUFUS_OK) { ui_print_error(bufus_err_str(rc)); return 1; }
-    device_lock(h, cfg->drive_index);
+    rc = device_lock(h, cfg->drive_index);
+    if (rc != BUFUS_OK) {
+        ui_print_error(bufus_err_str(rc));
+        device_close(h);
+        return 1;
+    }
 
     bench_result_t br;
     memset(&br, 0, sizeof(br));
@@ -221,7 +252,13 @@ static int run_write(const bufus_cfg_t *cfg,
         CloseHandle(src);
         return 1;
     }
-    device_lock(dev, cfg->drive_index);
+    rc = device_lock(dev, cfg->drive_index);
+    if (rc != BUFUS_OK) {
+        ui_print_error(bufus_err_str(rc));
+        device_close(dev);
+        CloseHandle(src);
+        return 1;
+    }
 
     uint32_t sector = dinfo->sector_size ? dinfo->sector_size : 512;
 
@@ -316,6 +353,14 @@ int main(int argc, char **argv) {
     device_info_t dinfo;
     if (device_get_info(cfg.drive_index, &dinfo) != BUFUS_OK) {
         ui_print_error("Drive not found. Use --list to see available drives.");
+        log_close();
+        return 1;
+    }
+
+    if (!dinfo.is_removable && !cfg.force) {
+        ui_print_error(
+            "Refusing to target a fixed/non-removable disk without --force.\n"
+            "  Use --list and verify the correct removable drive index.");
         log_close();
         return 1;
     }

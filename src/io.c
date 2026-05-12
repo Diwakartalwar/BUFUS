@@ -71,8 +71,16 @@ bufus_err_t io_write_image(const io_params_t *p) {
     /* Seek both handles to the start */
     LARGE_INTEGER zero;
     zero.QuadPart = 0;
-    SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN);
-    SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN);
+    if (!SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN)) {
+        LOGE("SetFilePointerEx failed for source seek (error %lu)", GetLastError());
+        VirtualFree(buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_READ;
+    }
+    if (!SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN)) {
+        LOGE("SetFilePointerEx failed for destination seek (error %lu)", GetLastError());
+        VirtualFree(buf, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_WRITE;
+    }
 
     uint64_t written_total = 0;
 

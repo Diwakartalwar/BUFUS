@@ -48,7 +48,11 @@ bufus_err_t disk_wipe_mbr(HANDLE h, uint32_t sector_size) {
 
     LARGE_INTEGER origin;
     origin.QuadPart = 0;
-    SetFilePointerEx(h, origin, NULL, FILE_BEGIN);
+    if (!SetFilePointerEx(h, origin, NULL, FILE_BEGIN)) {
+        LOGE("MBR wipe seek failed (error %lu)", GetLastError());
+        VirtualFree(zeros, 0, MEM_RELEASE);
+        return BUFUS_ERR_IO_WRITE;
+    }
 
     DWORD written = 0;
     BOOL  ok      = WriteFile(h, zeros, sector_size, &written, NULL);
