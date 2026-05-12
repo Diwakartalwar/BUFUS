@@ -5,6 +5,20 @@
 #include "verify.h"
 #include "logger.h"
 
+static bool seek_abs(HANDLE h, uint64_t off) {
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)off;
+    return SetFilePointerEx(h, li, NULL, FILE_BEGIN) != 0;
+}
+
+static bool get_pos(HANDLE h, uint64_t *out) {
+    LARGE_INTEGER zero, cur;
+    zero.QuadPart = 0;
+    if (!SetFilePointerEx(h, zero, &cur, FILE_CURRENT)) return false;
+    *out = (uint64_t)cur.QuadPart;
+    return true;
+}
+
 bufus_err_t verify_image(const verify_params_t *p) {
     uint32_t blk = p->block_size ? p->block_size : BUFUS_DEFAULT_BLOCK;
     BYTE *src_buf = (BYTE *)malloc(blk);
@@ -16,17 +30,14 @@ bufus_err_t verify_image(const verify_params_t *p) {
         return BUFUS_ERR_NOMEM;
     }
 
-    /* Rewind both handles */
-    LARGE_INTEGER zero;
-    zero.QuadPart = 0;
-    if (!SetFilePointerEx(p->src, zero, NULL, FILE_BEGIN)) {
-        LOGE("Verify: SetFilePointerEx failed for source seek (error %lu)", GetLastError());
+    if (!seek_abs(p->src, 0)) {
+        LOGE("Verify: source seek to start failed (error %lu)", GetLastError());
         free(src_buf);
         free(dst_buf);
         return BUFUS_ERR_IO_READ;
     }
-    if (!SetFilePointerEx(p->dst, zero, NULL, FILE_BEGIN)) {
-        LOGE("Verify: SetFilePointerEx failed for destination seek (error %lu)", GetLastError());
+    if (!seek_abs(p->dst, 0)) {
+        LOGE("Verify: destination seek to start failed (error %lu)", GetLastError());
         free(src_buf);
         free(dst_buf);
         return BUFUS_ERR_IO_READ;
@@ -36,16 +47,37 @@ bufus_err_t verify_image(const verify_params_t *p) {
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t_start);
 
-    uint64_t    verified = 0;
-    bufus_err_t rc       = BUFUS_OK;
+    uint64_t verified = 0;
+    bufus_err_t rc = BUFUS_OK;
 
     while (verified < p->size) {
         uint64_t remaining = p->size - verified;
         DWORD to_read = (DWORD)(remaining < (uint64_t)blk ? remaining : blk);
-        memset(src_buf, 0, to_read);
-        memset(dst_buf, 0, to_read);
+        uint64_t dst_pos_before = 0;
+        uint64_t dst_pos_after = 0;
 
-        /* Read from original source (buffered — any size OK) */
+        if (!seek_abs(p->src, verified)) {
+            LOGE("Verify: source seek failed at offset %llu (error %lu)",
+                 verified, GetLastError());
+            rc = BUFUS_ERR_IO_READ;
+            break;
+        }
+        if (!seek_abs(p->dst, verified)) {
+            LOGE("Verify: destination seek failed at offset %llu (error %lu)",
+                 verified, GetLastError());
+            rc = BUFUS_ERR_IO_READ;
+            break;
+        }
+        if (!get_pos(p->dst, &dst_pos_before)) {
+            LOGE("Verify: failed to query destination position before read (error %lu)",
+                 GetLastError());
+            rc = BUFUS_ERR_IO_READ;
+            break;
+        }
+
+        LOGD("VERIFY chunk: target_off=%llu bytes=%lu dst_pos_before=%llu",
+             verified, (unsigned long)to_read, dst_pos_before);
+
         DWORD r_src = 0;
         if (!ReadFile(p->src, src_buf, to_read, &r_src, NULL) || r_src == 0) {
             LOGE("Verify: ReadFile on source failed at offset %llu (error %lu)",
@@ -54,7 +86,6 @@ bufus_err_t verify_image(const verify_params_t *p) {
             break;
         }
 
-        /* Read from device using same byte size to compare exact payload. */
         DWORD r_dst = 0;
         if (!ReadFile(p->dst, dst_buf, to_read, &r_dst, NULL) || r_dst == 0) {
             LOGE("Verify: ReadFile on device failed at offset %llu (error %lu)",
@@ -62,6 +93,18 @@ bufus_err_t verify_image(const verify_params_t *p) {
             rc = BUFUS_ERR_IO_READ;
             break;
         }
+
+        if (!get_pos(p->dst, &dst_pos_after)) {
+            LOGE("Verify: failed to query destination position after read (error %lu)",
+                 GetLastError());
+            rc = BUFUS_ERR_IO_READ;
+            break;
+        }
+
+        LOGD("VERIFY done : read=%lu dst_pos_after=%llu expected=%llu",
+             (unsigned long)r_dst, dst_pos_after,
+             verified + (uint64_t)r_dst);
+
         if (r_dst != r_src) {
             LOGE("Verify: short read on device at offset %llu (%lu vs %lu)",
                  verified, (unsigned long)r_dst, (unsigned long)r_src);
@@ -69,9 +112,8 @@ bufus_err_t verify_image(const verify_params_t *p) {
             break;
         }
 
-        /* Compare only the source bytes (ignore sector-pad on device) */
         if (memcmp(src_buf, dst_buf, r_src) != 0) {
-            LOGE("Verify: DATA MISMATCH at offset %llu – %llu",
+            LOGE("Verify: DATA MISMATCH at offset %llu - %llu",
                  verified, verified + r_src);
             rc = BUFUS_ERR_VERIFY;
             break;
