@@ -59,6 +59,29 @@ bufus_err_t disk_get_geometry(HANDLE h, disk_geometry_t *out);
  */
 bufus_err_t disk_wipe_mbr(HANDLE h, uint32_t sector_size);
 
+/**
+ * Sanitize stale partition metadata before imaging.
+ *
+ * Zeros a region at the start of disk (MBR/GPT primary area) and a region
+ * at the end of disk (GPT backup header/table) so old layouts cannot survive
+ * when writing a smaller image to a larger USB.
+ *
+ * @param h           Device handle
+ * @param disk_size   Total disk size in bytes
+ * @param image_size  Incoming image size in bytes
+ *
+ * @return BUFUS_OK on success, otherwise write/readiness error
+ */
+bufus_err_t disk_sanitize_layout(HANDLE h, uint64_t disk_size, uint64_t image_size);
+
+/**
+ * Ask Windows storage stack to refresh cached disk layout.
+ *
+ * @param h Device handle
+ * @return BUFUS_OK on success, BUFUS_ERR_WIN32 on IOCTL failure
+ */
+bufus_err_t disk_refresh_layout(HANDLE h);
+
 #ifdef __cplusplus
 }
 #endif

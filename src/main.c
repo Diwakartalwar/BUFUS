@@ -285,6 +285,24 @@ static int run_write(const bufus_cfg_t *cfg,
 
     uint32_t sector = dinfo->sector_size ? dinfo->sector_size : 512;
 
+    printf("  Sanitizing stale partition metadata...\n");
+    rc = disk_sanitize_layout(dev, dinfo->size_bytes, src_size);
+    if (rc != BUFUS_OK) {
+        ui_print_error("Disk sanitization failed.");
+        device_unlock(dev);
+        device_close(dev);
+        CloseHandle(src);
+        return 1;
+    }
+    rc = disk_refresh_layout(dev);
+    if (rc != BUFUS_OK) {
+        ui_print_error("Disk layout refresh failed after sanitization.");
+        device_unlock(dev);
+        device_close(dev);
+        CloseHandle(src);
+        return 1;
+    }
+
     printf("\n  Writing image...\n");
     io_params_t wp = {
         .src         = src,
@@ -343,6 +361,12 @@ static int run_write(const bufus_cfg_t *cfg,
         }
 
         device_unlock(dev);
+        device_close(dev);
+    }
+
+    rc = device_open(cfg->drive_index, &dev);
+    if (rc == BUFUS_OK) {
+        disk_refresh_layout(dev);
         device_close(dev);
     }
 

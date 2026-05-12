@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <winioctl.h>
 #include <string.h>
+#include <stdlib.h>
 #include "disk.h"
 #include "logger.h"
 
@@ -64,5 +65,88 @@ bufus_err_t disk_wipe_mbr(HANDLE h, uint32_t sector_size) {
     }
 
     LOGI("MBR wiped: %u bytes zeroed at sector 0", sector_size);
+    return BUFUS_OK;
+}
+
+static bufus_err_t wipe_range(HANDLE h, uint64_t start, uint64_t bytes) {
+    const uint32_t chunk = 1024 * 1024;
+    BYTE *zeros = (BYTE *)calloc(1, chunk);
+    if (!zeros) return BUFUS_ERR_NOMEM;
+
+    LARGE_INTEGER pos;
+    pos.QuadPart = (LONGLONG)start;
+    if (!SetFilePointerEx(h, pos, NULL, FILE_BEGIN)) {
+        LOGE("wipe_range seek failed at %llu (error %lu)", start, GetLastError());
+        free(zeros);
+        return BUFUS_ERR_IO_WRITE;
+    }
+
+    uint64_t done = 0;
+    while (done < bytes) {
+        DWORD n = (DWORD)((bytes - done) < chunk ? (bytes - done) : chunk);
+        DWORD w = 0;
+        if (!WriteFile(h, zeros, n, &w, NULL) || w != n) {
+            LOGE("wipe_range write failed at %llu (error %lu)",
+                 start + done, GetLastError());
+            free(zeros);
+            return BUFUS_ERR_IO_WRITE;
+        }
+        done += w;
+    }
+
+    free(zeros);
+    return BUFUS_OK;
+}
+
+bufus_err_t disk_sanitize_layout(HANDLE h, uint64_t disk_size, uint64_t image_size) {
+    const uint64_t WIPE_MB = 16ull * 1024 * 1024;
+    uint64_t head = (disk_size < WIPE_MB) ? disk_size : WIPE_MB;
+    uint64_t tail = (disk_size < WIPE_MB) ? disk_size : WIPE_MB;
+    uint64_t tail_start;
+
+    (void)image_size;
+
+    LOGI("Sanitize: wiping first %.2f MiB and last %.2f MiB",
+         (double)head / (1024.0 * 1024.0),
+         (double)tail / (1024.0 * 1024.0));
+
+    if (head > 0) {
+        bufus_err_t rc = wipe_range(h, 0, head);
+        if (rc != BUFUS_OK) return rc;
+    }
+
+    if (tail > 0 && disk_size > tail) {
+        tail_start = disk_size - tail;
+        bufus_err_t rc = wipe_range(h, tail_start, tail);
+        if (rc != BUFUS_OK) return rc;
+    }
+
+    if (!FlushFileBuffers(h)) {
+        LOGE("Sanitize flush failed (error %lu)", GetLastError());
+        return BUFUS_ERR_IO_WRITE;
+    }
+
+    return BUFUS_OK;
+}
+
+bufus_err_t disk_refresh_layout(HANDLE h) {
+    DWORD dummy = 0;
+    DRIVE_LAYOUT_INFORMATION_EX layout;
+    DWORD ret = 0;
+
+    if (!DeviceIoControl(h, IOCTL_DISK_UPDATE_PROPERTIES,
+                         NULL, 0, NULL, 0, &dummy, NULL)) {
+        LOGE("IOCTL_DISK_UPDATE_PROPERTIES failed (error %lu)", GetLastError());
+        return BUFUS_ERR_WIN32;
+    }
+
+    memset(&layout, 0, sizeof(layout));
+    if (!DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_LAYOUT_EX,
+                         NULL, 0, &layout, sizeof(layout), &ret, NULL)) {
+        LOGW("IOCTL_DISK_GET_DRIVE_LAYOUT_EX failed (error %lu) after refresh",
+             GetLastError());
+    }
+
+    LOGI("Disk layout refresh requested");
     return BUFUS_OK;
 }
