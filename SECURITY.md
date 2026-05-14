@@ -1,146 +1,62 @@
-# BUFUS Security Considerations
+# Security Policy
 
-## Threat Model
+## Supported Versions
 
-BUFUS runs with Administrator privileges and performs raw disk I/O. This means
-any bug in the write path can cause arbitrary data corruption on any physical
-drive visible to the system. The threat model is:
+Security updates are applied to the latest commit on the `main` branch.
+Users building from source should rebuild after pulling fixes.
 
-1. **User error** — specifying the wrong drive index
-2. **Software bugs** — writing to wrong offsets, corrupting partition tables
-3. **Malicious inputs** — crafted ISO/IMG files, path manipulation
-4. **Privilege escalation** — not applicable (we already require admin)
+## Reporting a Vulnerability
 
----
+We take the security of BUFUS seriously. If you believe you have found a
+security vulnerability, please report it responsibly.
 
-## Current Safeguards
+**How to report:**
 
-### Drive Selection
-- `device_get_info()` verifies drive existence before any operation
-- Non-removable drives are rejected by default (override with `--force`)
-- `--list` shows all detected drives with indices before any operation
-- User must explicitly confirm with `[y/N]` prompt before destructive write
+1. Open a GitHub issue with the label `security`. If you prefer private
+   disclosure, you may also email the maintainer at
+   security@bufus.example.com with the subject prefix `[SECURITY]`.
 
-### Volume Locking
-- `device_lock()` dismounts all volumes on the target physical drive
-- `FSCTL_LOCK_VOLUME` prevents other processes from holding open handles
-- This prevents filesystem corruption from concurrent access
+2. Include the following in your report:
+   - Description of the vulnerability and its potential impact
+   - Steps to reproduce or proof-of-concept
+   - Affected version(s) or commit range
+   - Any known workarounds
 
-### Image Probing
-- `image_probe()` classifies incoming images
-- `image_probe_dd_safe()` returns false for pure ISO9660 (optical-only)
-  images, refusing raw write with a clear error message
-- This prevents users from accidentally writing an optical ISO directly
-  to a USB device (which would produce an unbootable result)
+**Do not** open public GitHub issues or discuss security vulnerabilities in
+public comments, pull requests, or Gists until the issue has been resolved.
 
----
+## What We Expect From Reporters
 
-## Known Security Gaps
+- Give us a reasonable amount of time to fix the issue before any
+  disclosure to the public or a third party
+- Do not exploit the vulnerability or problem you have discovered
+- Do not reveal the problem to others until it has been resolved
 
-### 1. No Drive Index Boundary Check
-**File:** `main.c:409-414`
+## What You Can Expect From Us
 
-Current code checks `cfg.drive_index < 0` but does not verify that the index
-is below `devlist.count`. A user could specify `--list`, count 3 drives
-(indices 0-2), then pass `-d 5`. The call to `device_get_info(5)` would
-fail, but only at the info retrieval stage — after privilege check and
-enumeration.
+- Acknowledgement of your report within 7 days
+- Status updates on the investigation and fix timeline
+- Credit for the reporter (unless you prefer anonymity) upon publication
 
-**Risk:** Low — results in a clear error message, not arbitrary write.
-**Fix:** Validate `cfg.drive_index < devlist.count` before proceeding.
+## Scope of Concern
 
-### 2. --force Bypasses Removable Check
-**File:** `main.c:423-429`
+Given the nature of BUFUS as a low-level disk imaging tool that requires
+Administrator privileges, relevant security areas include but are not limited
+to:
 
-The removable media check is skipped entirely when `--force` is passed.
-A user running `bufus.exe -s image.iso -d 0 --force` could target their
-system drive.
+- **Privilege escalation** — improper elevation or UAC handling
+- **Device handle abuse** — unauthorized read/write to unintended drives
+- **Buffer overflows** — especially in file/image parsing code
+- **Path injection** — directory traversal or symlink attacks on file paths
+- **Integer overflows** — in size calculations for disk/partition operations
 
-**Risk:** High — data destruction on system drive.
-**Mitigation:** Keep `--force` with clear warning messages. Consider adding
-a secondary confirmation for fixed drives even with `--force`. Add drive
-model name to the confirmation prompt.
+These are taken seriously even if BUFUS is a small project. All credible
+reports will be investigated.
 
-### 3. Source File Path Handling
-**File:** `main.c:107`, `bufus.h:46`
+## Disclosure Policy
 
-`strncpy` is used without guaranteed null termination when the source path
-is >= 259 characters. While the buffer is sized at `BUFUS_MAX_PATH_LEN` (260),
-`strncpy` does NOT null-terminate if source is >= destination size.
-
-**Risk:** Medium — potential buffer overrun in subsequent string operations.
-**Fix:** Explicitly null-terminate after `strncpy`:
-```c
-cfg.source[BUFUS_MAX_PATH_LEN - 1] = '\0';
-```
-
-### 4. Log File Path Injection
-**File:** `main.c:135`
-
-Same `strncpy` issue applies to `log_file`. Additionally, no validation is
-performed on the log file path — a user could specify paths outside the
-intended directory.
-
-**Risk:** Low — log file writing, not device I/O.
-**Fix:** `strncpy` + explicit null termination.
-
-### 5. No Integrity Check on Source File
-
-Source files (ISO/IMG) are read without any hash or signature verification.
-A corrupted or maliciously modified ISO will be written to the device as-is.
-
-**Risk:** Medium — depends on trust model. If downloading ISOs from the
-internet, integrity should be verified before BUFUS touches the device.
-**Mitigation:** Document that users should verify ISO checksums before use.
-Future: add `--hash` option (see ROADMAP.md).
-
-### 6. Volume Lock Race Condition
-
-`device_lock()` walks all volumes without holding a global lock. Between
-volume enumeration and lock attempts, the volume set could change (e.g., a
-USB drive is plugged in or a mount point changes).
-
-**Risk:** Low — worst case is a volume mount/unmount during the lock
-operation, which would either succeed or fail gracefully.
-**Mitigation:** Acceptable for v0.1. For production, consider a retry loop.
-
----
-
-## Privilege Requirements
-
-BUFUS requires Administrator (elevated) privileges. This is checked at
-startup via `bufus_is_elevated()` using `TokenElevation`. Without elevation:
-- `CreateFileA` on `\\\\.\\PhysicalDriveN` will fail with
-  `ERROR_ACCESS_DENIED`
-- `FSCTL_LOCK_VOLUME` will fail
-- The application will display an error and exit — it does not attempt
-  auto-elevation via UAC prompt
-
-**Design decision:** Do not self-elevate. The user must explicitly
-right-click → "Run as administrator." This gives the user a final
-opportunity to cancel before destructive operations.
-
----
-
-## Data at Rest
-
-BUFUS does not encrypt or obfuscate any data:
-- No credential storage
-- No license keys
-- Source image paths are stored in the `bufus_cfg_t` struct on the stack
-- Log files contain plaintext operation details (paths, sizes, timings)
-
-No secrets exist in the application. The security-sensitive operation is
-raw disk write, which is protected by the OS handle model and volume locking.
-
----
-
-## Future Security Work
-
-- **Hash-based source verification** — SHA-256 of source file displayed
-  after write, allowing manual comparison with upstream checksums
-- **Signed builds** — Authenticode signing of release binaries
-- **Better --force guardrails** — Require typing the drive model name
-  for fixed drives, not just `[y/N]`
-- **Audit log** — Append-only log of all write operations (date, image,
-  drive, result) for forensic traceability
+When a security issue is reported, we will:
+1. Confirm the vulnerability and determine its impact
+2. Develop a fix and release a new build
+3. Publish a GitHub Security Advisory with credit to the reporter
+4. Allow a reasonable disclosure window before any public discussion
