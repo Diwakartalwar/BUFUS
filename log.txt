@@ -1,8 +1,0 @@
-[2026-05-15 16:51:56] [INFO ] Found 2 physical drive(s)
-[2026-05-15 16:51:56] [INFO ] Source 'ubuntu.iso': 1424.00 MiB (1493172224 bytes)
-[2026-05-15 16:52:14] [INFO ] Opened \\.\PhysicalDrive1 for exclusive access
-[2026-05-15 16:52:14] [INFO ] Locked and dismounted volume on PhysicalDrive1
-[2026-05-15 16:52:14] [INFO ] Sanitize: wiping first 16.00 MiB and last 16.00 MiB
-[2026-05-15 16:52:16] [ERROR] wipe_range write failed at 11534336 (error 5)
-[2026-05-15 16:52:16] [INFO ] Device unlocked, partition table refresh requested
-[2026-05-15 16:52:16] [DEBUG] Device handle closed
