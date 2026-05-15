@@ -38,6 +38,25 @@ typedef enum {
     BUFUS_ERR_WIN32     = 10,  /**< Unexpected Win32 API error       */
 } bufus_err_t;
 
+typedef enum {
+    BUFUS_SCHEME_AUTO = 0,
+    BUFUS_SCHEME_MBR,
+    BUFUS_SCHEME_GPT,
+} bufus_partition_scheme_t;
+
+typedef enum {
+    BUFUS_BOOT_AUTO = 0,
+    BUFUS_BOOT_BIOS,
+    BUFUS_BOOT_UEFI,
+    BUFUS_BOOT_BOTH,
+} bufus_boot_mode_t;
+
+typedef enum {
+    BUFUS_WRITE_AUTO = 0,
+    BUFUS_WRITE_RAW,
+    BUFUS_WRITE_EXTRACT,
+} bufus_write_mode_t;
+
 /* ───────────────────────────────────────────────────────────────── */
 /* Configuration and constants                                        */
 /* ───────────────────────────────────────────────────────────────── */
@@ -54,6 +73,9 @@ typedef struct {
     char     log_file[BUFUS_MAX_PATH_LEN];  /**< Optional log file path          */
     int      drive_index;                   /**< Target physical drive index     */
     uint32_t block_size;                    /**< I/O block size in bytes         */
+    bufus_partition_scheme_t scheme;        /**< Requested partition scheme      */
+    bufus_boot_mode_t boot_mode;            /**< Requested boot target           */
+    bufus_write_mode_t write_mode;          /**< Raw image or ISO extraction     */
     bool     verify;                        /**< Verify after write              */
     bool     force;                         /**< Skip confirmation prompt        */
     bool     verbose;                       /**< Enable debug logging            */
